@@ -1,0 +1,9 @@
+[project]
+name = "virtuosos"
+version = "0.1.0"
+description = "Small script that reinterprets Virtuoso's MIDI output for Create: Sound of Steam"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mido[ports-rtmidi]",
+]

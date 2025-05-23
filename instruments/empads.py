@@ -16,6 +16,35 @@ class Empads(BaseInstrument):
         self.notes_sent_off = set()  # Track notes that already had note off sent
         self.lock = threading.Lock()
 
+    @classmethod
+    def load_from_config(cls, config, debug_mode=False):
+        """Load Empads from configuration"""
+        try:
+            # Get input and output channels (convert from 1-16 to 0-15)
+            input_channel = config.getint('CHANNELS', 'empads', fallback=9) - 1
+            output_channel = config.getint('OUTPUT_CHANNELS', 'empads', fallback=1) - 1
+            
+            # Create and return the instrument
+            instrument = cls(
+                name="Empads",
+                midi_channel=input_channel,
+                midi_program=0,
+                output_channel=output_channel,
+                debug_mode=debug_mode
+            )
+            
+            logger = logging.getLogger('VirtuoSoS')
+            input_ch_display = input_channel + 1
+            output_ch_display = output_channel + 1
+            logger.info(f"  - {instrument.name} (Input Ch: {input_ch_display}, Output Ch: {output_ch_display}, Program: {instrument.midi_program})")
+            
+            return instrument
+            
+        except Exception as e:
+            logger = logging.getLogger('VirtuoSoS')
+            logger.error(f"Failed to load Empads: {e}")
+            return None
+
     def process_message(self, msg, outport):
         """Process MIDI message and add automatic note off"""
         if not self.is_enabled or not self.is_my_channel(msg):

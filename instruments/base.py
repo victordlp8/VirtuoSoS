@@ -12,6 +12,21 @@ class BaseInstrument(ABC):
         self.is_enabled = True
         self.logger = logging.getLogger('VirtuoSoS')
 
+    @classmethod
+    @abstractmethod
+    def load_from_config(cls, config, debug_mode=False) -> 'BaseInstrument | None':
+        """
+        Load and create an instance of this instrument from configuration.
+        
+        Args:
+            config: ConfigParser object with instrument settings
+            debug_mode: Whether to enable debug mode
+            
+        Returns:
+            Instance of the instrument or None if not configured
+        """
+        pass
+
     @abstractmethod
     def process_message(self, msg, outport) -> bool:
         """

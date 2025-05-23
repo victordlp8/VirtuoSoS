@@ -58,18 +58,16 @@ def load_instruments(config, debug_mode=False):
     logger = logging.getLogger('VirtuoSoS')
     instruments = []
     
-    empads_input_channel = config.getint('CHANNELS', 'empads', fallback=0)
-    empads_output_channel = config.getint('OUTPUT_CHANNELS', 'empads', fallback=empads_input_channel)
-    empads = Empads(name="Empads", 
-                   midi_channel=empads_input_channel, 
-                   midi_program=0,
-                   output_channel=empads_output_channel,
-                   debug_mode=debug_mode)
-    instruments.append(empads)
+    logger.info("Loading instruments:")
     
-    logger.info("Loaded instruments:")
-    for instrument in instruments:
-        logger.info(f"  - {instrument}")
+    # Load each instrument using their own load_from_config method
+    empads = Empads.load_from_config(config, debug_mode)
+    if empads:
+        instruments.append(empads)
+    
+    wavemin = Wavemin.load_from_config(config, debug_mode)
+    if wavemin:
+        instruments.append(wavemin)
     
     return instruments
 

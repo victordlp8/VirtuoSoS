@@ -56,7 +56,7 @@ def load_midi_file(file_path: str) -> Optional[mido.MidiFile]:
         logger.error(f"Error loading MIDI file: {e}")
         return None
 
-def play_midi_file(file_path: str, output_device_name: str, debug_mode: bool = False) -> bool:
+def play_midi_file(file_path: str, output_device_name: str, debug_mode: bool = False, fix_notes: bool = False, min_duration_ms: int = 100) -> bool:
     """
     Play a MIDI file through the specified output device
     
@@ -64,6 +64,8 @@ def play_midi_file(file_path: str, output_device_name: str, debug_mode: bool = F
         file_path: Path to the MIDI file
         output_device_name: Name of the MIDI output device
         debug_mode: Enable debug logging
+        fix_notes: Whether to fix short notes by extending their duration
+        min_duration_ms: Minimum note duration in milliseconds (used when fix_notes=True)
         
     Returns:
         bool: True if playback completed successfully, False otherwise
@@ -74,6 +76,11 @@ def play_midi_file(file_path: str, output_device_name: str, debug_mode: bool = F
     midi_file = load_midi_file(file_path)
     if not midi_file:
         return False
+    
+    # Apply note fixing if requested
+    if fix_notes:
+        logger.info(f"Applying note duration fix (minimum: {min_duration_ms}ms)")
+        midi_file = fix_short_notes(midi_file, min_duration_ms)
     
     # Get song duration for progress bar
     song_duration = midi_file.length
@@ -314,3 +321,115 @@ def get_midi_file_info(file_path: str) -> dict:
         logger = logging.getLogger('VirtuoSoS')
         logger.error(f"Error getting MIDI file info: {e}")
         return {}
+
+def fix_short_notes(midi_file: mido.MidiFile, min_duration_ms: int) -> mido.MidiFile:
+    """
+    Fix short notes in a MIDI file by extending their duration to a minimum value.
+    This algorithm NEVER removes or modifies existing messages.
+    It only ADDS additional note_off messages when notes are too short.
+    
+    Args:
+        midi_file: The original MIDI file
+        min_duration_ms: Minimum note duration in milliseconds
+        
+    Returns:
+        MidiFile: New MIDI file with additional note_off messages for short notes
+    """
+    logger = logging.getLogger('VirtuoSoS')
+    
+    # Convert minimum duration from milliseconds to ticks
+    ticks_per_beat = midi_file.ticks_per_beat
+    # Default to 120 BPM (500000 microseconds per beat)
+    microseconds_per_beat = 500000
+    
+    # Look for tempo changes in the file
+    for track in midi_file.tracks:
+        for msg in track:
+            if msg.type == 'set_tempo':
+                microseconds_per_beat = msg.tempo
+                break
+    
+    # Convert to ticks: (ms / 1000) * (1000000 / microseconds_per_beat) * ticks_per_beat
+    min_duration_ticks = int((min_duration_ms * 1000 * ticks_per_beat) / microseconds_per_beat)
+    
+    logger.info(f"Adding note_off extensions for notes shorter than {min_duration_ms}ms ({min_duration_ticks} ticks)")
+    
+    # Create a new MIDI file with the same properties
+    new_midi_file = mido.MidiFile(type=midi_file.type, ticks_per_beat=ticks_per_beat)
+    
+    notes_fixed = 0
+    
+    for track_idx, track in enumerate(midi_file.tracks):
+        # Convert track to absolute time
+        absolute_messages = []
+        current_time = 0
+        
+        for msg in track:
+            current_time += msg.time
+            absolute_messages.append((current_time, msg.copy()))
+        
+        # Track active notes using a stack approach to handle overlapping notes correctly
+        active_notes = {}  # (channel, note) -> list of note_on times (stack)
+        additional_note_offs = []  # Additional note_off messages to add
+        
+        for abs_time, msg in absolute_messages:
+            if msg.type == 'note_on' and msg.velocity > 0:
+                # Add this note_on to the stack
+                key = (msg.channel, msg.note)
+                if key not in active_notes:
+                    active_notes[key] = []
+                active_notes[key].append(abs_time)
+                
+            elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                # Handle note_off - match with most recent note_on (LIFO)
+                key = (msg.channel, msg.note)
+                if key in active_notes and active_notes[key]:
+                    note_on_time = active_notes[key].pop()  # Remove most recent note_on
+                    note_duration = abs_time - note_on_time
+                    
+                    if note_duration < min_duration_ticks:
+                        # This note is too short, add an additional note_off at extended time
+                        extended_time = note_on_time + min_duration_ticks
+                        
+                        # Create additional note_off message
+                        additional_note_off = mido.Message('note_off', 
+                                                         channel=msg.channel, 
+                                                         note=msg.note, 
+                                                         velocity=0)
+                        additional_note_offs.append((extended_time, additional_note_off))
+                        
+                        notes_fixed += 1
+                        logger.debug(f"Will add extended note_off for note {msg.note} on channel {msg.channel} at time {extended_time} (duration extended from {note_duration} to {min_duration_ticks} ticks)")
+                    
+                    # Clean up empty lists
+                    if not active_notes[key]:
+                        del active_notes[key]
+        
+        # Handle any remaining active notes (orphaned note_on without note_off)
+        for key, note_on_times in active_notes.items():
+            channel, note = key
+            for note_on_time in note_on_times:
+                extended_time = note_on_time + min_duration_ticks
+                note_off_msg = mido.Message('note_off', channel=channel, note=note, velocity=0)
+                additional_note_offs.append((extended_time, note_off_msg))
+                notes_fixed += 1
+                logger.debug(f"Added note_off for orphaned note {note} on channel {channel}")
+        
+        # Combine original messages with additional note_offs
+        all_messages = absolute_messages + additional_note_offs
+        
+        # Sort by time and convert back to relative time
+        all_messages.sort(key=lambda x: x[0])
+        
+        new_track = mido.MidiTrack()
+        last_time = 0
+        
+        for abs_time, msg in all_messages:
+            msg.time = abs_time - last_time
+            new_track.append(msg)
+            last_time = abs_time
+        
+        new_midi_file.tracks.append(new_track)
+    
+    logger.info(f"Added {notes_fixed} additional note_off messages for short notes")
+    return new_midi_file

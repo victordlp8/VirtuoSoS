@@ -6,6 +6,7 @@ import logging
 import signal
 import sys
 from instruments import Empads
+from modules import play
 
 CONFIG_FILE = 'config.ini'
 
@@ -26,9 +27,9 @@ def setup_logging(debug_mode=False):
     console_handler.setLevel(logging.DEBUG if debug_mode else logging.INFO)
     
     if debug_mode:
-        formatter = logging.Formatter('[%(asctime)s] %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] - %(message)s')
     else:
-        formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter('[%(name)s] - [%(levelname)s] - %(message)s')
     
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
@@ -117,11 +118,12 @@ def main_menu(debug_mode=False):
             print("(DEBUG MODE ENABLED)")
         print(f"1. Modify Input MIDI Device (current: {input_device_name})")
         print(f"2. Modify Output MIDI Device (current: {output_device_name})")
-        print("3. Run script with current settings")
-        print("4. Show available MIDI devices")
-        print("5. Exit")
+        print("3. Run VirtuoSoS input relayer script with current settings")
+        print("4. Play a MIDI file")
+        print("5. Show available MIDI devices")
+        print("6. Exit")
 
-        choice = input("Enter your choice (1-5): ")
+        choice = input("Enter your choice (1-6): ")
 
         if choice == '1':
             print("\nAvailable MIDI Input Devices:")
@@ -170,14 +172,46 @@ def main_menu(debug_mode=False):
             return input_device_name, output_device_name
         
         elif choice == '4':
-            show_available_devices()
+            # Play MIDI file option
+            if output_device_name == 'Not Set' or output_device_name == 'Please set output device':
+                logger.error("Output MIDI device not configured. Please set it first (option 2).")
+                continue
+            
+            file_path = input("\nEnter the path to the MIDI file: ").strip().strip('"\'')
+            
+            if not file_path:
+                print("No file path provided.")
+                continue
+            
+            logger.info(f"Playing MIDI file: {file_path}")
+            logger.info(f"Output device: {output_device_name}")
+            
+            # Show file info before playing
+            file_info = play.get_midi_file_info(file_path)
+            if file_info:
+                logger.info(f"File info:")
+                logger.info(f"  - Duration: {file_info.get('length_seconds', 0):.2f} seconds")
+                logger.info(f"  - Tracks: {file_info.get('tracks', 0)}")
+                logger.info(f"  - Total messages: {file_info.get('total_messages', 0)}")
+            
+            # Play the MIDI file
+            success = play.play_midi_file(file_path, output_device_name, debug_mode)
+            if success:
+                logger.info("Playback completed successfully")
+            else:
+                logger.error("Playback failed")
+            
+            input("\nPress Enter to return to menu...")
         
         elif choice == '5':
+            show_available_devices()
+        
+        elif choice == '6':
             logger.info("Exiting.")
             return None, None
         
         else:
-            print("Invalid choice. Please enter a number between 1 and 5.")
+            print("Invalid choice. Please enter a number between 1 and 6.")
 
 def emergency_stop():
     """Emergency stop all instruments"""
@@ -187,18 +221,44 @@ def emergency_stop():
     running = False
     logger.warning("Emergency stop - stopping all instruments")
     
+    # Always try to send comprehensive all notes off if we have an output port
+    if outport:
+        try:
+            logger.info("Sending emergency all notes off...")
+            play.comprehensive_all_notes_off(outport, logger)
+        except Exception as e:
+            logger.error(f"Error during emergency all notes off: {e}")
+    
+    # Also try instrument-specific emergency stops if available
     if instruments and outport:
         for instrument in instruments:
             try:
                 instrument.emergency_stop_all_notes(outport)
             except Exception as e:
                 logger.error(f"Error during emergency stop for {instrument.name}: {e}")
+    
+    # If no outport is available, log that we cannot send emergency stop
+    if not outport:
+        logger.warning("No output port available for emergency stop")
+
+def cleanup_and_exit():
+    """Cleanup function to ensure all notes are stopped before exit"""
+    logger = logging.getLogger('VirtuoSoS')
+    logger.info("Performing final cleanup...")
+    
+    # Try emergency stop first
+    try:
+        emergency_stop()
+    except Exception as e:
+        logger.error(f"Error during emergency stop: {e}")
+    
+    logger.info("Cleanup completed")
 
 def signal_handler(signum, frame):
     """Handle Ctrl+C gracefully"""
     logger = logging.getLogger('VirtuoSoS')
     logger.info("Interrupt signal received. Performing emergency stop...")
-    emergency_stop()
+    cleanup_and_exit()
     sys.exit(0)
 
 def main():
@@ -206,15 +266,52 @@ def main():
     
     parser = argparse.ArgumentParser(description='VirtuoSoS MIDI Processor')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with detailed logging')
+    parser.add_argument('--play', type=str, help='Play a MIDI file through the output device')
     args = parser.parse_args()
     
     logger = setup_logging(args.debug)
     
     if args.debug:
-        logger.info("Debug mode enabled")
+        logger.debug("Debug mode enabled")
     
     signal.signal(signal.SIGINT, signal_handler)
     
+    # Handle MIDI file playback mode
+    if args.play:
+        config = configparser.ConfigParser()
+        config.read(CONFIG_FILE)
+        
+        # Get output device from config or prompt user to set it
+        if not config.has_section('MIDI'):
+            config.add_section('MIDI')
+        
+        output_device_name = config.get('MIDI', 'output_device', fallback=None)
+        
+        if not output_device_name or output_device_name in ['Not Set', 'Please set output device']:
+            logger.error("Output MIDI device not configured.")
+            logger.info("Please run the program without --play first to configure MIDI devices.")
+            show_available_devices()
+            return
+        
+        logger.info(f"Playing MIDI file: {args.play}")
+        logger.info(f"Output device: {output_device_name}")
+        
+        # Show file info before playing
+        file_info = play.get_midi_file_info(args.play)
+        if file_info:
+            logger.info(f"File info:")
+            logger.info(f"  - Duration: {file_info.get('length_seconds', 0):.2f} seconds")
+            logger.info(f"  - Tracks: {file_info.get('tracks', 0)}")
+            logger.info(f"  - Total messages: {file_info.get('total_messages', 0)}")
+        
+        # Play the MIDI file
+        success = play.play_midi_file(args.play, output_device_name, args.debug)
+        if not success:
+            logger.error("Playback failed")
+        
+        return
+    
+    # Original functionality for live MIDI processing
     input_device_name, output_device_name = main_menu(args.debug)
 
     if not input_device_name or not output_device_name:
@@ -239,8 +336,8 @@ def main():
                 try:
                     msg = inport.poll()
                     if msg:
-                        if args.debug:
-                            logger.debug(f"Received: {msg}")
+                        # if args.debug:
+                        #     logger.debug(f"Received: {msg}")
                         
                         processed = False
                         for instrument in instruments:
@@ -250,8 +347,8 @@ def main():
                         
                         if not processed:
                             outport.send(msg)
-                            if args.debug:
-                                logger.debug(f"Forwarded: {msg}")
+                            # if args.debug:
+                            #     logger.debug(f"Forwarded: {msg}")
                     else:
                         time.sleep(0.001)
                         

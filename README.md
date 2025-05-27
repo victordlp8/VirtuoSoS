@@ -5,7 +5,7 @@ Small script that reinterprets [Virtuoso](https://store.steampowered.com/app/121
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-username/VirtuosoCSoS.git
+git clone https://github.com/victordlp8/VirtuoSoS.git
 cd VirtuoSoS
 ```
 

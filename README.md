@@ -40,6 +40,7 @@ uv run main.py --play "path_to_midi_file"
 ```bash
 uv run main.py
 ```
-
 And follow the corresponding instructions.
+
+Just be ready to play in Minecraft by clicking the Keyboard Relay cause as soon as you send the command the music will start to play.
 
